@@ -13,7 +13,8 @@ import enum
 import json
 from flask_security import roles_required
 from emoji import emojize
-#from flask_user import current_user, login_required, roles_required, UserManager, UserMixin
+from sqlalchemy import event
+import wtforms
 
 # Create Flask application
 app = Flask(__name__)
@@ -37,9 +38,23 @@ class User(db.Model):
     login = db.Column(db.String(80), unique=True)
     email = db.Column(db.String(120))
     password = db.Column(db.String(64))
-    groups = db.Column(ScalarListType())
+    #groups = db.Column(ScalarListType())
+    #the below two lines work if foreign key were defined in Role
+    #and Group table respectively pointing to one unique key here
+    #so we create a secondary table UserGroups = user_groups and
+    #userRoles and backref them with user here in next 4 lines
+    #this type is used when many to many relationship exists
+    #user has many roles/groups and role/group has many users
+    #without using foreign key in primary tables User Group and Role
+    #FK is used in secondary tables UserGroups and UserRoles
+
+    #groups = db.relationship('Group',backref='user')
+    #roles = db.relationship('Role',backref='user')
+
+    groups = db.relationship('Group', secondary='user_groups',
+    backref=db.backref('user', lazy='dynamic'))
     roles = db.relationship('Role', secondary='user_roles',
-    backref=db.backref('users', lazy='dynamic'))
+    backref=db.backref('user', lazy='dynamic'))
 
     #chats = db.relationship('Chat',backref='chatuser',lazy=True)
 
@@ -66,32 +81,44 @@ class User(db.Model):
 
     # Required for administrative interface
     def __unicode__(self):
-        return self.username
-    # Define the Role data model
+        return self.login
+
+    def __unicode__(self):
+        return self.login
+    
+    def set_password(self, password):
+        """Set password"""
+        self.password = generate_password_hash(password)
     
 class Role(db.Model):
+    __tablename__='role'
     id = db.Column(db.Integer(), primary_key=True, autoincrement=True)
     name = db.Column(db.String(50), unique=True )
 
-# Define the UserRoles data model
-class UserRoles(db.Model):
-    id = db.Column(db.Integer(), primary_key=True, autoincrement=True)
-    user_id = db.Column(db.Integer(), db.ForeignKey('user.id', ondelete='CASCADE'))
-    role_id = db.Column(db.Integer(), db.ForeignKey('role.id', ondelete='CASCADE'))
-
 class Group(db.Model):
     __tablename__='group'
-    group_id = db.Column(db.Integer, primary_key=True,autoincrement=True)
-    group_name = db.Column(db.String(80), unique=True, nullable=False)
-    group_members = db.Column(ScalarListType())
-    #chats = db.relationship('Chat',backref='chatgroup')
+    id = db.Column(db.Integer, primary_key=True,autoincrement=True)
+    name = db.Column(db.String(80), unique=True)
+
+# Define the UserRoles data model( secondary table without foreign key in individual tables - many to many relationship)
+class UserRoles(db.Model):
+    id = db.Column(db.Integer(), primary_key=True, autoincrement=True)
+    user_login = db.Column(db.Integer(),db.ForeignKey('user.login', ondelete='CASCADE'))
+    role_name = db.Column(db.Integer(), db.ForeignKey('role.name', ondelete='CASCADE'))
+
+import sqlalchemy
+# Define the UserGroups data model ( secondary table without foreign key in individual tables- many to many relationship)
+class UserGroups(db.Model):
+    id = db.Column(db.Integer(), primary_key=True, autoincrement=True)
+    user_login = db.Column(db.Integer(), db.ForeignKey('user.login', ondelete='CASCADE'))
+    group_name = db.Column(db.Integer(), db.ForeignKey('group.name', ondelete='CASCADE'))
 
 from sqlalchemy import DateTime
 from sqlalchemy.sql import func
 class Chat(db.Model):
     __tablename__='chat'
     chat_id = db.Column(db.Integer ,primary_key=True, autoincrement=True)
-    group_id = db.Column(db.Integer,db.ForeignKey('group.group_id'),nullable=False) 
+    group_id = db.Column(db.Integer,db.ForeignKey('group.id'),nullable=False) 
     user_id = db.Column(db.Integer,db.ForeignKey('user.id'), nullable=False)
     chat_line = db.Column(db.String(200), nullable=False)
     created_at = db.Column(DateTime(timezone=True), server_default=func.now())
@@ -217,32 +244,33 @@ def index():
 # Initialize flask-login
 init_login()
 
-import pdb
+
+class UserView(MyModelView):
+    form_excluded_columns = ('password')
+    #  Form will now use all the other fields in the model
+    #  Add our own password form field - call it password2
+    form_extra_fields = {
+        'password2': wtforms.PasswordField('Password'),
+    }
+    def on_model_change(self, form, User, is_created):
+        if form.password2.data is not None:
+            User.set_password(form.password2.data)
+
 # Create admin
 admin = admin.Admin(app, 'GroupChat', index_view=MyAdminIndexView(), base_template='my_master.html', template_mode='bootstrap4')
-#pdb.set_trace()
 
-admin.add_view(MyModelView(User, db.session))
-#from flask.ext.admin.contrib.sqla.view import ModelView, func
+admin.add_view(UserView(User, db.session))
 admin.add_view(MyModelView(Group, db.session))
 admin.add_view(MyModelView(Chat, db.session))
-# Add view
 
 @app.route('/groups', methods=['GET','POST'])
 @login.login_required
 #@roles_required('normal')
 def groups():
-    #pdb.set_trace()
-    u = User.query.filter_by(login='admin').first().groups
-    if u is None:
-        u=[]
-        u.append('group1')
-        u.append('group2')
-        db.session.commit()
+    u_g = User.query.filter_by(login=login.current_user.login).first().groups
     member_groups=""
-    #print("in groups",data,login,login.current_user,login.current_user.login,login.current_user.id, login.current_user.roles)
-    for i in u:
-        member_groups+=f"<h2><input type='submit' name='{i}' value='{i}' formaction=group/{i}/><h2><br>"
+    for i in u_g:
+        member_groups+=f"<h2><button style='height:200px;width:200px' type='submit' name='{i.name}' value='{i.name}' formaction=group/{i.name}><h2>{i.name}</h2></button><h2><br>"
     if flask.request.method == 'GET':
         return render_template("chatgroups.html",member_groups=member_groups)
         """f'''
@@ -254,12 +282,10 @@ def groups():
     group = flask.request.form['submit']
     print(f"group={group}")
     return flask.redirect(flask.url_for(group))
-    #return 'Groups subscribed:' + data.keys() #flask_login.current_user.id
-@app.route('/group/<id>/', methods=['POST','GET'])    
+@app.route('/group/<name>/', methods=['POST','GET'])    
 @login.login_required
 #@roles_required('normal')
-def get_group(id):
-    #pdb.set_trace()
+def get_group(name):
     message_str_pre='''<!DOCTYPE html>
     <html>
     <head>
@@ -281,24 +307,24 @@ def get_group(id):
     </head>
     <body>'''
     message_str=[]
-    for m in Chat.query.filter_by(group_id=id):
-        like_count=Chat.query.filter_by(group_id=id).first().likes
+    groupId = Group.query.filter_by(name=name).first().id
+    for m in Chat.query.filter_by(group_id=groupId,user_id=login.current_user.id):
+        like_count=m.likes
         if like_count:
-            message_str.append(f"{m.chat_line} {like_count}"+emojize(":thumbs_up:"))
+            message_str.append(f"{m.chat_line} "+emojize(":thumbs_up:")+f"{like_count}")
         else:
             message_str.append(f"{m.chat_line}"+"<br>")
-    message_str_post=f'''<form action="/post_group/{id}" enctype="multipart/form-data" method="POST" ><br>
+    message_str_post=f'''<form action="/post_group/{groupId}" enctype="multipart/form-data" method="POST" ><br>
     <input id="chatmessageinput" name="chat-message-input" type="text" size="100"><br>
     <a href=# id="chat-message-submit"><button class='btn btn-default'>Send</button></a></form>'''
     return render_template("chatroom.html",message_str_pre=message_str_pre, message_str=message_str,message_str_post=message_str_post)
 
 from flask import request
-@app.route('/post_group/<id>/', methods=['POST','GET'])    
+@app.route('/post_group/<group_id>/', methods=['POST','GET'])    
 @login.login_required
-#@roles_required('normal')
-def post_group(id):
+def post_group(group_id):
     jsdata = request.form['chat-message-input']
-    db.session.add(Chat(group_id=id,user_id=login.current_user.id,chat_line=jsdata,likes=0))
+    db.session.add(Chat(group_id=group_id,user_id=login.current_user.id,chat_line=jsdata,likes=0))
     db.session.commit()
     return  redirect(request.referrer)
 
@@ -344,20 +370,21 @@ def build_sample_db():
 
     #group_ids = [ 1,2,3]
     group_names = [ 'group1', 'group2', 'group3' ]
-    group_members = [ 'harry@example.com,amelia@example.com','oliver@example.com,jack@example.com']
+    #group_members = [['admin'],['normal'],['harry']]
 
     for i in range(len(group_names)):
         group = Group()
         #group.group_id = group_ids[i]
-        group.group_name = group_names[i]
+        group.name = group_names[i]
+        #group.group_members = group_members[i]
         db.session.add(group)
     
+    db.session.commit()
     role_names = ['admin','normal']
     for i in range(len(role_names)):
-        print(i,role_names[i])
         role= Role()
         #role.role_id = role_ids[i]
-        role.r_name = role_names[i]
+        role.role_name = role_names[i]
         db.session.add(role)
     db.session.commit()
     return
