@@ -34,7 +34,9 @@ comment the following lines in app.py:::
 
 TODO:   
 
-1.group add option to user    
-2.edit user   
+1.group add option to user   - done 
+2.edit user   - done
 3.testing    
+4.group names in dropdowns
+
 etc     
